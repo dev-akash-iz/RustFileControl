@@ -1,0 +1,11 @@
+{
+  "process": "copy",
+  "source_path": "D://",
+  "destination_path": "E://",
+  "exclude": [
+    "node_modules",
+    "AKASH",
+    "$RECYCLE.BIN",
+    "System Volume Information"
+  ]
+}
