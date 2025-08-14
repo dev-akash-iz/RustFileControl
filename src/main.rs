@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::{fs, process};
+use std::{fs};
 use std::fs::{copy, create_dir_all, read_dir, DirEntry, ReadDir};
 use std::io::stdin;
 use std::path::{ PathBuf};
@@ -12,25 +12,61 @@ fn main() {
         Ok(content) => content,
         Err(e) => {
             eprintln!("Error reading config.json: {}", e);
-            process::exit(1)
+            press_any_key_to_exit();
+            std::process::exit(1);
         }
     };
 
 
     let config: Config = serde_json::from_str(&data).unwrap_or_else(|e| {
         eprintln!("Error parsing JSON: {}", e);
-        process::exit(1)
+        press_any_key_to_exit();
+        std::process::exit(1);
     });
 
     let exclude:&HashSet<String>= &config.exclude;
 
     //let is_move:bool = config.process.as_str()=="move";
 
+    /*
+    [This block handles percentage calculation.]
+
+    Normally, to show accurate progress like Windows does,
+    you’d traverse all files, calculate the total size,
+    and then update the progress bar or “glow” effect
+    as data is copied.
+
+    However, we’re skipping the expensive full traversal.
+
+    Instead, we estimate progress based only on the top-level
+    folders in the source directory:
+    - Each top-level folder is considered one “unit” of work.
+    - When a top-level folder is fully processed (including
+      everything inside it), we increment the percentage
+      accordingly.
+
+    This is faster, but less precise than calculating by file size.
+*/
+    let mut count_root=read_dir(&config.source_path).unwrap();
+    let root_count:u32 = count(&mut count_root);
+
+    //ealry exit so we avoid futher inittializations
+    if(root_count == 0){
+        println!("nothing to process");
+        press_any_key_to_exit();
+        std::process::exit(1);
+    }
+
+    let mut how_much_completed:u32= 0;
+    let mut stack_length:u32= 1;
+
+
     let file_operation: fn(from: PathBuf, to: &PathBuf)  = match config.process.as_str() {
         "copy" => copy_files,
         "move" => move_file,
         _ => {
             eprintln!("Unknown process type");
+            press_any_key_to_exit();
             std::process::exit(1);
         }
     };
@@ -78,29 +114,7 @@ fn main() {
     let mut queue:VecDeque<ReadDir> = VecDeque::with_capacity(50);
     let mut destination_root:PathBuf = PathBuf::from(config.destination_path);
 
-    /*
-        [This block handles percentage calculation.]
 
-        Normally, to show accurate progress like Windows does,
-        you’d traverse all files, calculate the total size,
-        and then update the progress bar or “glow” effect
-        as data is copied.
-
-        However, we’re skipping the expensive full traversal.
-
-        Instead, we estimate progress based only on the top-level
-        folders in the source directory:
-        - Each top-level folder is considered one “unit” of work.
-        - When a top-level folder is fully processed (including
-          everything inside it), we increment the percentage
-          accordingly.
-
-        This is faster, but less precise than calculating by file size.
-    */
-    let mut count_root=read_dir(&config.source_path).unwrap();
-    let root_count:u32 = count(&mut count_root);
-    let mut how_much_completed:u32= 0;
-    let mut stack_length:u32= 1;
 
 
 
@@ -130,17 +144,21 @@ fn main() {
 
         let mut folder_founded:bool=false;
 
-
         for eachFolderElement in single_folder {
             let item:DirEntry = eachFolderElement.unwrap();
             let file_name = &item.file_name();
             let name =file_name.to_str().unwrap();
 
+            if(stack_length == 1 ){
+                how_much_completed +=1;
+            }
+
             if(exclude.contains(name)){
                 // count it so the hidden folders exculed also count in the main root
-                if(stack_length == 1 ){
-                    how_much_completed +=1;
-                }
+
+                // if(stack_length == 1 ){
+                //     how_much_completed +=1;
+                // }
 
                 continue;
             }
@@ -165,13 +183,13 @@ fn main() {
 
                 destination_root.pop();
 
-                if(stack_length == 1 ){
-                    how_much_completed +=1;
-                }
+                // if(stack_length == 1 ){
+                //     how_much_completed +=1;
+                // }
             }else if  (metadata.is_dir())  {
-                if(stack_length == 1 ){
-                    how_much_completed +=1;
-                }
+                // if(stack_length == 1 ){
+                //     how_much_completed +=1;
+                // }
                 folder_founded = true;
 
                 queue.push_back(read_dir(item.path()).unwrap());
