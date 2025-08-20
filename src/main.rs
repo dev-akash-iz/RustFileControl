@@ -1,30 +1,21 @@
 use std::collections::{HashSet, VecDeque};
-use std::{fs};
+use std::{fs, thread};
 use std::fs::{copy, create_dir_all, read_dir, DirEntry, ReadDir};
 use std::io::stdin;
 use std::path::{ PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use serde::{Deserialize, Serialize};
 
 
+
 fn main() {
+    /*
+    read configuration here and moveing the config instance
+    */
+    let config: Config = read_configuration();
 
-    let data = match fs::read_to_string("config.json") {
-        Ok(content) => content,
-        Err(e) => {
-            eprintln!("Error reading config.json: {}", e);
-            press_any_key_to_exit();
-            std::process::exit(1);
-        }
-    };
-
-
-    let config: Config = serde_json::from_str(&data).unwrap_or_else(|e| {
-        eprintln!("Error parsing JSON: {}", e);
-        press_any_key_to_exit();
-        std::process::exit(1);
-    });
-
-    let exclude:&HashSet<String>= &config.exclude;
+    let exclude:&HashSet<String> = &config.exclude;
 
     //let is_move:bool = config.process.as_str()=="move";
 
@@ -47,11 +38,12 @@ fn main() {
 
     This is faster, but less precise than calculating by file size.
 */
-    let mut count_root=read_dir(&config.source_path).unwrap();
-    let root_count:u32 = count(&mut count_root);
+    let read_dir_instance=read_dir(&config.source_path).unwrap();
+
+    let root_files_count:u32 = count(read_dir_instance);
 
     //ealry exit so we avoid futher inittializations
-    if(root_count == 0){
+    if(root_files_count == 0){
         println!("nothing to process");
         press_any_key_to_exit();
         std::process::exit(1);
@@ -61,7 +53,7 @@ fn main() {
     let mut stack_length:u32= 1;
 
 
-    let file_operation: fn(from: PathBuf, to: &PathBuf)  = match config.process.as_str() {
+    let file_operation: fn(from: PathBuf, to: PathBuf)  = match config.process.as_str() {
         "copy" => copy_files,
         "move" => move_file,
         _ => {
@@ -139,6 +131,11 @@ fn main() {
     //     .status()
     //     .unwrap();
 
+
+    let fn_deque: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+
+
     while !queue.is_empty() {
         let  single_folder: &mut ReadDir = queue.back_mut().unwrap();
 
@@ -166,20 +163,30 @@ fn main() {
             let metadata= item.metadata().unwrap();
 
 
-            let progress = if root_count > 0 {
-                (how_much_completed as f32 / root_count as f32) * 100.0
+            let progress = if root_files_count > 0 {
+                (how_much_completed as f32 / root_files_count as f32) * 100.0
             } else {
                 0.0
             };
-            println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_count);
-            println!("Current : {}", item.path().to_str().unwrap());
+            println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
+            println!("Current : {} started to process", item.path().to_str().unwrap());
 
             if (metadata.is_file()) {
 
                 destination_root.push(name);
 
-                // here is the copy or move happens
-                file_operation(item.path(), &destination_root);
+
+
+                {
+                    let mut q = fn_deque.lock().unwrap();
+                    let dest_copy = destination_root.clone();
+                    q.push_back(Box::new(move || {
+                        // 👇 Here is your file operation inside the closure
+                        // here is the copy or move happens
+                        file_operation(item.path(), dest_copy);
+                        println!("Current : {} completed", item.path().to_str().unwrap() );
+                    }));
+                }
 
                 destination_root.pop();
 
@@ -238,22 +245,27 @@ fn main() {
             destination_root.pop();
 
             if(stack_length==1){
-                let progress = if root_count > 0 {
-                    (how_much_completed as f32 / root_count as f32) * 100.0
+                let progress = if root_files_count > 0 {
+                    (how_much_completed as f32 / root_files_count as f32) * 100.0
                 } else {
                     0.0
                 };
-                println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_count);
+                println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
             }
             stack_length -= 1;
         }
 
     }
+    let  handler:Vec<JoinHandle<_>> =create_thread(&fn_deque);
+    for each_thread in handler {
+        // wait for each thread to finish task
+        each_thread.join().unwrap();
+    }
     println!("\nCopy process completed. Total files/directories processed: {}", how_much_completed);
     press_any_key_to_exit();
 }
 
-fn count(read_dir:&mut ReadDir) -> u32 {
+fn count(read_dir:ReadDir) -> u32 {
     let mut count = 0;
 
     for entry_result in read_dir {
@@ -263,11 +275,11 @@ fn count(read_dir:&mut ReadDir) -> u32 {
 }
 
 
-fn copy_files(from: PathBuf, to: &PathBuf)  {
+fn copy_files(from: PathBuf, to: PathBuf)  {
     copy(from,to);
 }
 
-fn move_file(from: PathBuf, to: &PathBuf)  {
+fn move_file(from: PathBuf, to: PathBuf)  {
     println!("Move is not implemented")
     // copy(&from, to);
     //
@@ -275,12 +287,94 @@ fn move_file(from: PathBuf, to: &PathBuf)  {
     // fs::remove_file(&from);
 }
 
+fn create_thread(fn_deque:&Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>) -> Vec<JoinHandle<()>> {
+    let mut handler:Vec<JoinHandle<_>> =vec![];
+    // Spawn 2 worker threads
+    for id in 0..9 {
+        let queue = Arc::clone(&fn_deque);
+        handler.push(thread::spawn(move || {
+            //let mut exit_count:u8=0;
+            loop {
+                // if(exit_count==200){
+                //     break;
+                // }
+                // Try to get a task
+                let job_opt = {
+                    let mut q = queue.lock().unwrap();
+                    q.pop_front()
+                };
+
+                match job_opt {
+                    Some(job) => {
+                        //exit_count=0;
+                        println!("Thread {id} got a job");
+                        job(); // execute closure
+                    }
+                    None => {
+                        break;
+                        // exit_count+=1;
+                        // if(exit_count>5){
+                        //     println!("Thread {id} going to end");
+                        // }
+                        // No job: sleep a bit so we don’t busy-spin
+                    }
+                }
+            }
+        }));
+    }
+    return handler;
+}
+
+fn read_configuration()-> Config {
+    let data = match fs::read_to_string("config.json") {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("Error reading config.json: {}", e);
+            press_any_key_to_exit();
+            std::process::exit(1);
+        }
+    };
+
+
+    let config: Config = serde_json::from_str(&data).unwrap_or_else(|e| {
+        eprintln!("Error parsing JSON: {}", e);
+        press_any_key_to_exit();
+        std::process::exit(1);
+    });
+    return  config;
+}
+
+
+struct Subscribe {
+    thread_sharable_storage_queue:Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>
+}
+impl Subscribe {
+
+    fn new()-> Subscribe {
+        Subscribe{
+            thread_sharable_storage_queue:Arc::new(Mutex::new(VecDeque::new()))
+        }
+    }
+    fn send(&self,closure:Box<dyn FnOnce() + Send>){
+      let mut locked = self.thread_sharable_storage_queue.lock().unwrap();
+        locked.push_back(closure);
+    }
+
+    fn copy(&self)->Arc<Mutex<VecDeque<Box<dyn FnOnce()+Send>>>>{
+        Arc::clone(&self.thread_sharable_storage_queue)
+    }
+
+}
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
     process: String,
     source_path: String,
     destination_path: String,
     exclude: HashSet<String>,
+    #[serde(default)]
+    multi_threading:bool,
+    #[serde(default)]
+    cpu_usage_percent:usize
 }
 
 
