@@ -2,9 +2,11 @@ use std::collections::{HashSet, VecDeque};
 use std::{fs, thread};
 use std::fs::{copy, create_dir_all, read_dir, DirEntry, ReadDir};
 use std::io::stdin;
+use std::ops::Deref;
 use std::path::{ PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 
@@ -132,9 +134,10 @@ fn main() {
     //     .unwrap();
 
 
-    let fn_deque: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>> = Arc::new(Mutex::new(VecDeque::new()));
+    //let fn_deque: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>> = Arc::new(Mutex::new(VecDeque::new()));
+   let subscribe:Subscribe= Subscribe::new();
 
-
+   let handler:Vec<JoinHandle<_>> =create_thread(&subscribe);
 
     while !queue.is_empty() {
         let  single_folder: &mut ReadDir = queue.back_mut().unwrap();
@@ -163,28 +166,27 @@ fn main() {
             let metadata= item.metadata().unwrap();
 
 
-            let progress = if root_files_count > 0 {
-                (how_much_completed as f32 / root_files_count as f32) * 100.0
-            } else {
-                0.0
-            };
-            println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
-            println!("Current : {} started to process", item.path().to_str().unwrap());
+
+
+            //println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
+            //println!("Current : {} started to process", item.path().to_str().unwrap());
 
             if (metadata.is_file()) {
 
                 destination_root.push(name);
 
 
-
                 {
-                    let mut q = fn_deque.lock().unwrap();
+                    // let mut q = fn_deque.lock().unwrap();
                     let dest_copy = destination_root.clone();
-                    q.push_back(Box::new(move || {
+
+                    subscribe.assign_work(Box::new(move || {
                         // 👇 Here is your file operation inside the closure
                         // here is the copy or move happens
                         file_operation(item.path(), dest_copy);
-                        println!("Current : {} completed", item.path().to_str().unwrap() );
+                        let progress = (how_much_completed as f32 / root_files_count as f32) * 100.0;
+
+                        println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
                     }));
                 }
 
@@ -204,8 +206,10 @@ fn main() {
 
                 destination_root.push(name);
                 match create_dir_all(&destination_root) {
-                    Ok(_) => println!("Created destination directory: {:?}", destination_root),
-                    Err(e) => eprintln!("Failed to create destination directory may present {:?}: {}", destination_root, e),
+                    Ok(_) => {},
+                    Err(e) => {},
+                    // Ok(_) => println!("Created destination directory: {:?}", destination_root),
+                    // Err(e) => eprintln!("Failed to create destination directory may present {:?}: {}", destination_root, e),
                 }
                 stack_length += 1;
                 break;
@@ -256,7 +260,8 @@ fn main() {
         }
 
     }
-    let  handler:Vec<JoinHandle<_>> =create_thread(&fn_deque);
+
+    subscribe.set_all_files_shared_status(true);
     for each_thread in handler {
         // wait for each thread to finish task
         each_thread.join().unwrap();
@@ -287,11 +292,13 @@ fn move_file(from: PathBuf, to: PathBuf)  {
     // fs::remove_file(&from);
 }
 
-fn create_thread(fn_deque:&Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>) -> Vec<JoinHandle<()>> {
+fn create_thread(subscribe:&Subscribe) -> Vec<JoinHandle<()>> {
     let mut handler:Vec<JoinHandle<_>> =vec![];
     // Spawn 2 worker threads
     for id in 0..9 {
-        let queue = Arc::clone(&fn_deque);
+
+        let subscribed:Subscribe = subscribe.duplicate_handle();
+
         handler.push(thread::spawn(move || {
             //let mut exit_count:u8=0;
             loop {
@@ -299,19 +306,21 @@ fn create_thread(fn_deque:&Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>) -> Ve
                 //     break;
                 // }
                 // Try to get a task
-                let job_opt = {
-                    let mut q = queue.lock().unwrap();
-                    q.pop_front()
-                };
+                let job_opt = subscribed.get_work();
 
                 match job_opt {
                     Some(job) => {
                         //exit_count=0;
-                        println!("Thread {id} got a job");
+                        // println!("Thread {id} got a job");
                         job(); // execute closure
                     }
                     None => {
-                        break;
+
+                        if(subscribed.get_all_files_shared_status()){
+                         break;
+                        }else {
+                            thread::sleep(Duration::from_millis(500));
+                        }
                         // exit_count+=1;
                         // if(exit_count>5){
                         //     println!("Thread {id} going to end");
@@ -344,24 +353,44 @@ fn read_configuration()-> Config {
     return  config;
 }
 
-
-struct Subscribe {
-    thread_sharable_storage_queue:Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>
+ struct Subscribe {
+    thread_sharable_storage_queue:Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>,
+    all_files_shared_to_queue:Arc<Mutex<bool>>
 }
+
 impl Subscribe {
 
     fn new()-> Subscribe {
         Subscribe{
-            thread_sharable_storage_queue:Arc::new(Mutex::new(VecDeque::new()))
+            thread_sharable_storage_queue:Arc::new(Mutex::new(VecDeque::new())),
+            all_files_shared_to_queue:Arc::new(Mutex::new(false))
         }
     }
-    fn send(&self,closure:Box<dyn FnOnce() + Send>){
+    fn assign_work(&self,closure:Box<dyn FnOnce() + Send>){
       let mut locked = self.thread_sharable_storage_queue.lock().unwrap();
         locked.push_back(closure);
+        drop(locked);
     }
 
-    fn copy(&self)->Arc<Mutex<VecDeque<Box<dyn FnOnce()+Send>>>>{
-        Arc::clone(&self.thread_sharable_storage_queue)
+    fn duplicate_handle(&self)->Subscribe{
+        Subscribe{
+            all_files_shared_to_queue:Arc::clone(&self.all_files_shared_to_queue),
+            thread_sharable_storage_queue:Arc::clone(&self.thread_sharable_storage_queue)
+        }
+    }
+
+    fn get_work(&self)-> Option<Box<dyn FnOnce()+Send>> {
+        let mut q = self.thread_sharable_storage_queue.lock().unwrap();
+        q.pop_front()
+    }
+
+    fn set_all_files_shared_status(&self,value:bool){
+        let mut status:MutexGuard<bool> = self.all_files_shared_to_queue.lock().unwrap();
+        *status = value;
+    }
+    fn get_all_files_shared_status(&self)-> bool{
+        let  status:MutexGuard<bool> = self.all_files_shared_to_queue.lock().unwrap();
+        *status
     }
 
 }
