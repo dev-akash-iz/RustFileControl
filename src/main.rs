@@ -329,12 +329,12 @@ fn create_thread(subscribe:&Subscribe ,config:&Config) -> Option<Vec<JoinHandle<
      with any value is equal to divinding with that thing
 
     */
-    let clamp_percentage = if config.cpu_thread_usage_percent > 101 {
+    let clamp_percentage = if config.cpu_usage_percent > 101 {
         (total_core_on_system as f64) * (100.0 * FAST_DIVISION_HUNDRED)
-    } else if config.cpu_thread_usage_percent < 1 {
+    } else if config.cpu_usage_percent < 1 {
         (total_core_on_system as f64) * (10.0 * FAST_DIVISION_HUNDRED)
     } else {
-        (total_core_on_system as f64) *  (config.cpu_thread_usage_percent as f64 * FAST_DIVISION_HUNDRED)
+        (total_core_on_system as f64) *  (config.cpu_usage_percent as f64 * FAST_DIVISION_HUNDRED)
     };
 
     let final_core_allowed = clamp_percentage.ceil() as usize;
@@ -458,7 +458,7 @@ struct Config {
     #[serde(default)]
     multi_threading:bool,
     #[serde(default)]
-    cpu_thread_usage_percent:usize
+    cpu_usage_percent:usize
 }
 
 
