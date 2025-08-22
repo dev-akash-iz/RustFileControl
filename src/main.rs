@@ -2,7 +2,6 @@ use std::collections::{HashSet, VecDeque};
 use std::{fs, thread};
 use std::fs::{copy, create_dir_all, read_dir, DirEntry, ReadDir};
 use std::io::stdin;
-use std::ops::Deref;
 use std::path::{ PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -13,13 +12,12 @@ use serde::{Deserialize, Serialize};
 
 fn main() {
     /*
-    read configuration here and moveing the config instance
+     read configuration here and moveing the config instance
     */
     let config: Config = read_configuration();
 
     let exclude:&HashSet<String> = &config.exclude;
-
-    //let is_move:bool = config.process.as_str()=="move";
+    let thread_allowed =config.multi_threading;
 
     /*
     [This block handles percentage calculation.]
@@ -65,6 +63,12 @@ fn main() {
         }
     };
 
+    // let operation_source:fn(dest:&PathBuf,subscribe:&Subscribe ,file_oper:&fn(from: PathBuf, to: PathBuf),item:DirEntry) = if config.multi_threading {
+    //
+    // }else {
+    //
+    // }
+
     /*
         [Core traversal handler.]
 
@@ -105,14 +109,13 @@ fn main() {
          so we can join subpaths directly instead of replacing the source
          root (e.g., D:/name) with the destination root for every file which is not efficient.
     */
-    let mut queue:VecDeque<ReadDir> = VecDeque::with_capacity(50);
-    let mut destination_root:PathBuf = PathBuf::from(config.destination_path);
-
-
+    let mut queue:VecDeque<ReadDir> = VecDeque::with_capacity(1000);
+    let mut destination_root:PathBuf = PathBuf::from(&config.destination_path);
 
 
 
     let root_folder=read_dir(&config.source_path).unwrap();
+
     queue.push_back(root_folder);
 
 
@@ -135,17 +138,23 @@ fn main() {
 
 
     //let fn_deque: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>> = Arc::new(Mutex::new(VecDeque::new()));
-   let subscribe:Subscribe= Subscribe::new();
+    //already stack size is alocated so ,light heap initalization so not moved inside thread for now
 
-   let handler:Vec<JoinHandle<_>> =create_thread(&subscribe);
+    let subscribe:Subscribe = Subscribe::new();
+
+    let mut handler: Option<Vec<JoinHandle<_>>> = None;
+
+    if(thread_allowed){
+        handler = create_thread(&subscribe,&config);
+    }
 
     while !queue.is_empty() {
         let  single_folder: &mut ReadDir = queue.back_mut().unwrap();
 
         let mut folder_founded:bool=false;
 
-        for eachFolderElement in single_folder {
-            let item:DirEntry = eachFolderElement.unwrap();
+        for each_folder_element in single_folder {
+            let item:DirEntry = each_folder_element.unwrap();
             let file_name = &item.file_name();
             let name =file_name.to_str().unwrap();
 
@@ -175,20 +184,24 @@ fn main() {
 
                 destination_root.push(name);
 
+                let dest_copy = destination_root.clone();
+                let progress = (how_much_completed as f32 / root_files_count as f32) * 100.0;
 
-                {
-                    // let mut q = fn_deque.lock().unwrap();
-                    let dest_copy = destination_root.clone();
+                if (thread_allowed) {
 
                     subscribe.assign_work(Box::new(move || {
-                        // 👇 Here is your file operation inside the closure
+                        // Here is your file operation inside the closure
                         // here is the copy or move happens
                         file_operation(item.path(), dest_copy);
-                        let progress = (how_much_completed as f32 / root_files_count as f32) * 100.0;
 
                         println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
                     }));
+
+                }else {
+                    file_operation(item.path(), dest_copy);
+                    println!("Progress: completed {:.2}% ({} / {})", progress, how_much_completed, root_files_count);
                 }
+
 
                 destination_root.pop();
 
@@ -262,10 +275,17 @@ fn main() {
     }
 
     subscribe.set_all_files_shared_status(true);
-    for each_thread in handler {
-        // wait for each thread to finish task
-        each_thread.join().unwrap();
+
+    if let Some(threads) = handler {
+        for each_thread in threads {
+            // wait for each thread to finish task
+            each_thread.join().unwrap();
+        }
     }
+
+
+
+
     println!("\nCopy process completed. Total files/directories processed: {}", how_much_completed);
     press_any_key_to_exit();
 }
@@ -281,7 +301,8 @@ fn count(read_dir:ReadDir) -> u32 {
 
 
 fn copy_files(from: PathBuf, to: PathBuf)  {
-    copy(from,to);
+    copy(&from,&to);
+    println!("{:?}",from)
 }
 
 fn move_file(from: PathBuf, to: PathBuf)  {
@@ -292,10 +313,40 @@ fn move_file(from: PathBuf, to: PathBuf)  {
     // fs::remove_file(&from);
 }
 
-fn create_thread(subscribe:&Subscribe) -> Vec<JoinHandle<()>> {
+fn create_thread(subscribe:&Subscribe ,config:&Config) -> Option<Vec<JoinHandle<()>>> {
     let mut handler:Vec<JoinHandle<_>> =vec![];
-    // Spawn 2 worker threads
-    for id in 0..9 {
+
+    let total_core_on_system=get_cpu_core();
+    const FAST_DIVISION_HUNDRED:f64 = 1.0/100.0;
+    /*
+     calculate the core usage calculation via percentage
+     percentage can user type from any number 0 to 1000
+     so we need to make sure it is between 1 to 100
+     here we clamp calculate the percentage via dividing that to 100
+     so to divide by 100 we use multiplication way of that is
+     by doing like this below
+     1/100 gives fast  0.00000233304 some value multipling this
+     with any value is equal to divinding with that thing
+
+    */
+    let clamp_percentage = if config.cpu_thread_usage_percent > 101 {
+        (total_core_on_system as f64) * (100.0 * FAST_DIVISION_HUNDRED)
+    } else if config.cpu_thread_usage_percent < 1 {
+        (total_core_on_system as f64) * (10.0 * FAST_DIVISION_HUNDRED)
+    } else {
+        (total_core_on_system as f64) *  (config.cpu_thread_usage_percent as f64 * FAST_DIVISION_HUNDRED)
+    };
+
+    let final_core_allowed = clamp_percentage.ceil() as usize;
+
+    println!("Threads usage for current task : {}", final_core_allowed);
+
+
+    /*
+    creating here thread and making it regular chek the que
+    task added by main thread and  here these thread complete that
+    */
+    for id in 0..final_core_allowed {
 
         let subscribed:Subscribe = subscribe.duplicate_handle();
 
@@ -317,7 +368,7 @@ fn create_thread(subscribe:&Subscribe) -> Vec<JoinHandle<()>> {
                     None => {
 
                         if(subscribed.get_all_files_shared_status()){
-                         break;
+                            break;
                         }else {
                             thread::sleep(Duration::from_millis(500));
                         }
@@ -331,7 +382,7 @@ fn create_thread(subscribe:&Subscribe) -> Vec<JoinHandle<()>> {
             }
         }));
     }
-    return handler;
+    return Some(handler);
 }
 
 fn read_configuration()-> Config {
@@ -353,21 +404,23 @@ fn read_configuration()-> Config {
     return  config;
 }
 
- struct Subscribe {
+
+struct Subscribe {
     thread_sharable_storage_queue:Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>,
     all_files_shared_to_queue:Arc<Mutex<bool>>
 }
+
 
 impl Subscribe {
 
     fn new()-> Subscribe {
         Subscribe{
-            thread_sharable_storage_queue:Arc::new(Mutex::new(VecDeque::new())),
+            thread_sharable_storage_queue:Arc::new(Mutex::new(VecDeque::with_capacity(1000))),
             all_files_shared_to_queue:Arc::new(Mutex::new(false))
         }
     }
     fn assign_work(&self,closure:Box<dyn FnOnce() + Send>){
-      let mut locked = self.thread_sharable_storage_queue.lock().unwrap();
+        let mut locked = self.thread_sharable_storage_queue.lock().unwrap();
         locked.push_back(closure);
         drop(locked);
     }
@@ -394,16 +447,18 @@ impl Subscribe {
     }
 
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Config {
     process: String,
     source_path: String,
     destination_path: String,
+    #[serde(default)]
     exclude: HashSet<String>,
     #[serde(default)]
     multi_threading:bool,
     #[serde(default)]
-    cpu_usage_percent:usize
+    cpu_thread_usage_percent:usize
 }
 
 
@@ -412,3 +467,18 @@ fn press_any_key_to_exit(){
     let mut user_responce:String=String::new();
     stdin().read_line(&mut user_responce).unwrap();
 }
+
+ fn get_cpu_core()->usize{
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    cores
+}
+
+// fn thread_way(dest:&PathBuf,subscribe:&Subscribe ,file_oper:&fn(from: PathBuf, to: PathBuf),item:DirEntry)  {
+//     // file_oper();
+// }
+//
+// fn syncronus_way(dest:&PathBuf,subscribe:&Subscribe ,file_oper:&fn(from: PathBuf, to: PathBuf),item:DirEntry)  {
+//     println!("Move is not implemented")
+// }

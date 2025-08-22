@@ -1,77 +1,107 @@
+# 🦀 RustFileControl – File Manage Tool
+
+A **high-performance, multi-threaded** file management tool built in Rust.
+Copy, move, or manage large directories efficiently while skipping unwanted folders and controlling CPU usage.
+
+Perfect for developers who want **fast, configurable, and safe file operations**.
 
 ---
 
-# RustFileControl – File Manage Tool
+## ✨ Features
 
-A fast, flexible Rust tool to copy, move, and manage files. Skip unwanted folders, filter files, and handle large directory trees efficiently.
+* 🦀 **Smart Filtering** – Exclude folders like `node_modules`, `$RECYCLE.BIN`, or system directories.
+* ⚡ **Efficient Copying** – Queue-based I/O with low memory usage.
+* 🧵 **Multi-Threading** – Utilizes all CPU cores for maximum speed.
+* 🔍 **Config-Driven** – Everything controlled via a simple JSON file.
+* 📂 **Recursive Scan** – Works with huge directory trees safely.
 
 ---
 
-## Features
-
-* **Custom Filtering** – Exclude folders like `node_modules` or system directories.
-* **Efficient Copying** – Queue-based I/O with minimal memory usage.
----
-
-## Installation
+## 🚀 Installation
 
 ```bash
-# Install Rust
+# Install Rust (if not already)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Clone and build
+# Clone & build
 git clone https://github.com/dev-akash-iz/RustFileControl
 cd RustFileControl
 cargo build --release
 ```
 
-Binary is in `target/release/`.
+✅ The compiled binary will be available in:
+`target/release/`
 
 ---
 
-## Usage
+## ⚡ Usage
 
-Create a JSON config:
+Create a `config.json` file with your desired options:
 
 ```json
 {
   "process": "copy",
-  "sourcePath": "D://Projects",
-  "destinationPath": "E://Backup",
-  "exclude": ["node_modules", "$RECYCLE.BIN", "System Volume Information"]
+  "source_path": "D://Projects",
+  "destination_path": "E://Backup",
+  "exclude": ["node_modules", "$RECYCLE.BIN", "System Volume Information"],
+  "multi_threading": true,
+  "cpu_usage_percent": 100
 }
 ```
 
-Run:
+Run RustFileControl:
 
 ```bash
-cargo run --release 
+cargo run --release
 ```
 
-RustFileControl scans, filters, and copies files efficiently.
+🦀 The tool will **scan → filter → copy/move** your files using multiple threads if enabled.
 
 ---
 
-## How It Works
+## 🔹 Configuration Keys Explained
 
-1. **Scan** – Read directories recursively.
-2. **Filter** – Skip excluded files/folders.
-3. **Queue & Copy** – Buffered, efficient file transfer.
+* **`process`** – The operation to perform:
+    * `"copy"` → copy files from source to destination
+    * *(future plans: `"move"`, `"sync"`, `"delete"`)*
+
+
+* **`source_path`** – Path to the folder **where files will be read from**.
+
+
+* **`destination_path`** – Path to **where files will be copied or moved to**.
+
+* **`exclude`** – Array of folders or files to **skip during the operation**. Useful for ignoring system folders or large cache directories.
+
+* **`multi_threading`** – Enable/disable **multi-threaded processing**:
+
+    * `true` → utilize multiple threads for faster performance
+    * `false` → single-threaded (less CPU load)
+
+* **`cpu_usage_percent`** – Maximum CPU usage allowed:
+
+    * `100` → use all available cores fully
+    * `50` → use half of total CPU power
+    * Helps balance speed vs system load
 
 ---
 
-## Future Plans
+## 🔧 How It Works
 
-* Multi-threaded & pipelined copy
-* more options on Progress reporting & logging
-* Move, sync, or mirror modes, others
-* Cross-Platform.
-
+1. **Scan** – Recursively traverse the source directory.
+2. **Filter** – Skip any folders or files listed in `exclude`.
+3. **Copy** – Buffered, multi-threaded operations for fast and safe file management.
 
 ---
 
-## License
+## 🛠 Future implementation
+
+* 📊 Advanced **progress reporting & logging**
+* 🔄 **Move, sync, mirror** modes
+* 🗑 Smart **cache cleanup** (delete only included folders)
+
+---
+
+## 📜 License
 
 MIT License – free to use, modify, and distribute.
-
----
